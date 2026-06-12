@@ -1,0 +1,235 @@
+/**
+ * Token-usage metering, from the agents service's three read endpoints:
+ *
+ *   GET /api/usage/detail                       — one row per LLM call
+ *   GET /api/usage/summary                      — daily rollups (model × feature)
+ *   GET /api/usage/calls/{usage_event_id}/log   — audit: full prompt + output
+ *
+ * Per-message attribution works because the platform stamps every
+ * call with the conversation `thread_id`, and ALL calls made while
+ * answering one user message (intent classifier, retrieval, the
+ * completion itself) share a `request_id`. Filter by thread, group by
+ * request_id → one row per message with a per-call breakdown.
+ *
+ * All three endpoints are entity-scoped server-side: a signed-in user
+ * sees exactly their own usage.
+ */
+import { tokenManager } from '@yieldfabric/wallet'
+
+import { AGENTS_API_URL } from '../config'
+
+function authHeaders(): Record<string, string> {
+  const token = tokenManager.getAuthToken({ purpose: 'user' })
+  return token ? { Authorization: `Bearer ${token}` } : {}
+}
+
+/** One LLM call, as returned by GET /api/usage/detail. */
+export interface UsageEvent {
+  id: string | null
+  feature: string
+  model: string
+  request_id: string | null
+  call_type: string
+  prompt_tokens: number
+  completion_tokens: number
+  total_tokens: number
+  latency_ms: number
+  success: boolean
+  error_type: string | null
+  thread_id: string | null
+  created_at: string
+}
+
+/** All LLM calls behind ONE user message (grouped by request_id). */
+export interface MessageUsage {
+  requestId: string
+  startedAt: Date
+  /** Models touched (usually one; classifier + completion can differ). */
+  models: string[]
+  promptTokens: number
+  completionTokens: number
+  totalTokens: number
+  /** SUM of per-call latencies — an upper bound on wall time, not the
+   *  user-perceived response time. Label it as LLM time in UIs. */
+  latencyMs: number
+  hasError: boolean
+  /** Chronological per-call breakdown. */
+  calls: UsageEvent[]
+}
+
+export interface ThreadUsage {
+  /** Newest first. */
+  messages: MessageUsage[]
+  /** True when the thread has more events than we paged in — totals
+   *  then cover only the most recent calls and must say so. */
+  truncated: boolean
+}
+
+const DETAIL_PAGE_SIZE = 500
+const DETAIL_MAX_PAGES = 4
+
+/** Per-message usage for a conversation. Pages through the detail
+ *  endpoint (newest first) up to DETAIL_MAX_PAGES; longer-lived
+ *  threads come back with `truncated: true`. */
+export async function fetchThreadUsage(threadId: string): Promise<ThreadUsage> {
+  const events: UsageEvent[] = []
+  let truncated = false
+  for (let page = 0; page < DETAIL_MAX_PAGES; page++) {
+    const res = await fetch(
+      `${AGENTS_API_URL}/api/usage/detail?thread_id=${encodeURIComponent(threadId)}` +
+        `&limit=${DETAIL_PAGE_SIZE}&offset=${page * DETAIL_PAGE_SIZE}`,
+      { headers: authHeaders() },
+    )
+    if (!res.ok) {
+      throw new Error(`GET /api/usage/detail failed: HTTP ${res.status}`)
+    }
+    const json = await res.json()
+    const batch: UsageEvent[] = json?.data ?? []
+    events.push(...batch)
+    if (batch.length < DETAIL_PAGE_SIZE) break
+    if (page === DETAIL_MAX_PAGES - 1) truncated = true
+  }
+
+  const groups = new Map<string, UsageEvent[]>()
+  for (const e of events) {
+    // request_id is always set in practice; fall back to the row id so
+    // a stray null can never merge unrelated calls.
+    const key = e.request_id ?? `row-${e.id}`
+    const bucket = groups.get(key)
+    if (bucket) bucket.push(e)
+    else groups.set(key, [e])
+  }
+
+  const messages: MessageUsage[] = []
+  groups.forEach((calls, requestId) => {
+    const ordered = [...calls].sort(
+      (a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime(),
+    )
+    messages.push({
+      requestId,
+      startedAt: new Date(ordered[0].created_at),
+      models: Array.from(new Set(ordered.map((c) => c.model).filter(Boolean))),
+      promptTokens: ordered.reduce((n, c) => n + (c.prompt_tokens || 0), 0),
+      completionTokens: ordered.reduce((n, c) => n + (c.completion_tokens || 0), 0),
+      totalTokens: ordered.reduce((n, c) => n + (c.total_tokens || 0), 0),
+      latencyMs: ordered.reduce((n, c) => n + (c.latency_ms || 0), 0),
+      hasError: ordered.some((c) => !c.success),
+      calls: ordered,
+    })
+  })
+  messages.sort((a, b) => b.startedAt.getTime() - a.startedAt.getTime())
+  return { messages, truncated }
+}
+
+/** Per-model aggregation across a set of messages — costs differ per
+ *  model, so per-model token counts are the unit that matters. */
+export interface ModelAggregate {
+  model: string
+  promptTokens: number
+  completionTokens: number
+  totalTokens: number
+  calls: number
+}
+
+export function aggregateByModel(messages: MessageUsage[]): ModelAggregate[] {
+  const map = new Map<string, ModelAggregate>()
+  for (const m of messages) {
+    for (const c of m.calls) {
+      const model = c.model || '—'
+      const agg =
+        map.get(model) ??
+        ({ model, promptTokens: 0, completionTokens: 0, totalTokens: 0, calls: 0 } as ModelAggregate)
+      agg.promptTokens += c.prompt_tokens || 0
+      agg.completionTokens += c.completion_tokens || 0
+      agg.totalTokens += c.total_tokens || 0
+      agg.calls += 1
+      map.set(model, agg)
+    }
+  }
+  return Array.from(map.values()).sort((a, b) => b.totalTokens - a.totalTokens)
+}
+
+/** One daily rollup row, as returned by GET /api/usage/summary. */
+export interface DailyUsage {
+  date: string
+  model: string
+  feature: string
+  calls: number
+  promptTokens: number
+  completionTokens: number
+  totalTokens: number
+}
+
+/** Daily rollups for the caller over the trailing `days` window.
+ *  Rollups are advanced by a background task (~every 5 minutes) and
+ *  aggregate successful calls — very recent activity may not show. */
+export async function fetchUsageSummary(days = 7): Promise<DailyUsage[]> {
+  const end = new Date()
+  const start = new Date(end.getTime() - (days - 1) * 24 * 60 * 60 * 1000)
+  const fmt = (d: Date) => d.toISOString().slice(0, 10)
+  const res = await fetch(
+    `${AGENTS_API_URL}/api/usage/summary?start_date=${fmt(start)}&end_date=${fmt(end)}`,
+    { headers: authHeaders() },
+  )
+  if (!res.ok) {
+    throw new Error(`GET /api/usage/summary failed: HTTP ${res.status}`)
+  }
+  const json = await res.json()
+  const rows: Array<{
+    date: string
+    model: string
+    feature: string
+    call_count: number
+    total_prompt_tokens: number
+    total_completion_tokens: number
+    total_tokens: number
+  }> = json?.data ?? []
+  return rows.map((r) => ({
+    date: r.date,
+    model: r.model,
+    feature: r.feature,
+    calls: r.call_count,
+    promptTokens: r.total_prompt_tokens,
+    completionTokens: r.total_completion_tokens,
+    totalTokens: r.total_tokens,
+  }))
+}
+
+/** The audit view of one metered call: exact prompt + output. */
+export interface CallLog {
+  usageEventId: string
+  /** JSON array of the messages sent upstream (role/content shape). */
+  promptMessages: unknown
+  output: string
+  maxTokensRequested: number | null
+  createdAt: string | null
+}
+
+export async function fetchCallLog(usageEventId: string): Promise<CallLog> {
+  const res = await fetch(
+    `${AGENTS_API_URL}/api/usage/calls/${encodeURIComponent(usageEventId)}/log`,
+    { headers: authHeaders() },
+  )
+  if (res.status === 404) {
+    throw new Error('No log for this call — call logging may be disabled, or the row expired (30-day retention)')
+  }
+  if (!res.ok) {
+    throw new Error(`GET /api/usage/calls/…/log failed: HTTP ${res.status}`)
+  }
+  const json = await res.json()
+  return {
+    usageEventId: json.usage_event_id,
+    promptMessages: json.prompt_messages,
+    output: json.output ?? '',
+    maxTokensRequested: json.max_tokens_requested ?? null,
+    createdAt: json.created_at ?? null,
+  }
+}
+
+/** 1234 → "1.2k", 1234567 → "1.23M", 999 → "999". */
+export function formatTokens(n: number): string {
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(2)}M`
+  if (n >= 10_000) return `${Math.round(n / 1000)}k`
+  if (n >= 1_000) return `${(n / 1000).toFixed(1)}k`
+  return String(n)
+}

@@ -1,0 +1,35 @@
+{
+  "compilerOptions": {
+    "target": "es5",
+    "lib": ["dom", "dom.iterable", "esnext"],
+    "allowJs": true,
+    "skipLibCheck": true,
+    "esModuleInterop": true,
+    "allowSyntheticDefaultImports": true,
+    "strict": true,
+    "forceConsistentCasingInFileNames": true,
+    "noFallthroughCasesInSwitch": true,
+    "module": "esnext",
+    "moduleResolution": "node",
+    "resolveJsonModule": true,
+    "isolatedModules": true,
+    "noEmit": true,
+    "jsx": "preserve",
+    "baseUrl": ".",
+    "paths": {
+      "@yieldfabric/wallet": ["../../yieldfabric-wallet-sdk/src"],
+      "@yieldfabric/wallet/*": ["../../yieldfabric-wallet-sdk/src/*"],
+      "@yieldfabric/terminal": ["../../yieldfabric-terminal/src"],
+      "@yieldfabric/terminal/*": ["../../yieldfabric-terminal/src/*"],
+      "@averer/averer-websdk": ["./src/types/averer-websdk.d.ts"],
+      "@avatune/kyute-theme/react": ["./src/types/kyute-theme-react.d.ts"],
+      "react": ["./node_modules/react"],
+      "react-dom": ["./node_modules/react-dom"],
+      "zod": ["./node_modules/zod"],
+      "js-sha3": ["./node_modules/js-sha3"],
+      "@heroicons/react/*": ["./node_modules/@heroicons/react/*"]
+    }
+  },
+  "include": ["src"],
+  "exclude": ["node_modules"]
+}
