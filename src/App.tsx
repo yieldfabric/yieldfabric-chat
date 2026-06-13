@@ -5,6 +5,10 @@ import { WalletProvider } from '@yieldfabric/wallet';
 import RequireAuth from './components/RequireAuth';
 import Login from './pages/Login';
 import Chat from './pages/Chat';
+import Tools from './pages/Tools';
+import Analytics from './pages/Analytics';
+import Reasoning from './pages/Reasoning';
+import Knowledge from './pages/Knowledge';
 
 /**
  * Root providers. `<WalletProvider>` is the wallet-SDK's single mount
@@ -41,6 +45,38 @@ export default function App() {
           element={
             <RequireAuth>
               <Chat />
+            </RequireAuth>
+          }
+        />
+        <Route
+          path="/tools"
+          element={
+            <RequireAuth>
+              <Tools />
+            </RequireAuth>
+          }
+        />
+        <Route
+          path="/reasoning"
+          element={
+            <RequireAuth>
+              <Reasoning />
+            </RequireAuth>
+          }
+        />
+        <Route
+          path="/knowledge"
+          element={
+            <RequireAuth>
+              <Knowledge />
+            </RequireAuth>
+          }
+        />
+        <Route
+          path="/analytics"
+          element={
+            <RequireAuth>
+              <Analytics />
             </RequireAuth>
           }
         />

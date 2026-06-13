@@ -36,6 +36,34 @@ What you get out of the box:
   (classifier, retrieval, completion), the exact prompt + output of
   any call for audit (`GET /api/usage/calls/{id}/log`), and your
   7-day rollups by model and feature.
+- **Tool calling on `/v1`** — a **Tools** page (the second tab) that
+  drives the OpenAI-compatible `POST /v1/chat/completions` endpoint
+  with `tools` / `tool_choice`, runs the standard agent loop with
+  browser-executed tools, and renders each step (model requests tool →
+  browser runs it → result fed back → final answer). Optionally adds
+  the `yf` extension (workspace grounding + the server-side
+  `rag_search` builtin).
+- **Cross-surface Analytics** — an **Analytics** page (third tab) that
+  shows *all* your LLM usage across every surface (native chat, `/v1`
+  tools, embeddings, …) from `GET /api/usage/aggregate`: live totals
+  (incl. failures and today's calls), breakdowns by surface and model,
+  and a recent-activity feed with the same per-call audit drill-down.
+- **Multi-agent reasoning** — a **Reasoning** page that starts a run
+  (`POST /pipelines/run`, kind: reasoning), streams the agents'
+  narrative + KG growth live over SSE, **surfaces the agent team as it
+  forms** (the `team_setup` events — roles, expertise, core/extended),
+  and handles the human-in-the-loop pauses. On completion you can:
+  **chat with the resulting KG** (grounded `POST /chat` with `kg_id`)
+  **as any of its agents** (the `as_agent` picker, sourced from the
+  surfaced team), or **"Reason over this KG"** to chain a fresh run
+  with the result as context.
+- **File → knowledge graph** — a **Knowledge** page that uploads a
+  document (`POST /pipelines/ingest-document-upload`; the server
+  chunks, embeds, and extracts frames), streams ingestion over the
+  same SSE, and renders the resulting graph (frame counts + the typed
+  frames) — with the same chat-with-the-KG and reason-over affordances.
+  All of it shares one `pipelines.ts` service and the `PipelineRunView`
+  / `KgView` / `KgChat` components.
 
 Every LLM call is authenticated, per-entity metered, and (when you add
 `working_group_id` / `kg_id`) grounded in your YieldFabric knowledge
@@ -47,32 +75,41 @@ substrate — without your app holding any upstream LLM keys.
 - A reachable YieldFabric deployment and a user account on it. Either:
   - a **local stack** (auth `:3000`, payments `:3002`, agents `:3001`), or
   - the **hosted platform** (`auth.yieldfabric.com` / `agents.yieldfabric.com`).
-- This example consumes `@yieldfabric/wallet` and
-  `@yieldfabric/terminal` **from source** as `file:` dependencies two
-  directories up (`../../yieldfabric-wallet-sdk`,
-  `../../yieldfabric-terminal`), exactly like the first-party app. If
-  you copy this example out of the repo, update the two `file:` paths
-  in `package.json` (and the mirrored paths in `craco.config.js`,
-  `tsconfig.json`, `tailwind.config.js`, plus the `postinstall`
-  script) to wherever you vendor the packages.
+- **SDK resolution is automatic — local source if present, else the
+  published packages.** No manual switch:
+  - **In the monorepo** (the sibling repos exist at
+    `../../yieldfabric-wallet-sdk` and `../../yieldfabric-terminal`), the
+    SDKs build from their **live source** — edit `@yieldfabric/wallet` or
+    `@yieldfabric/terminal` and it shows up here with no rebuild, just like
+    `yieldfabric-app`.
+  - **Standalone** (copy this folder anywhere, no siblings), `npm install`
+    pulls `@yieldfabric/*` from the **public npm registry** and builds from
+    the published dist — no token, no `.npmrc` scope config needed.
+
+  The detection lives in `craco.config.js` / `tailwind.config.js` (presence
+  check) and `tsconfig.json` (two-entry `paths`, src first). Force the
+  published path from inside the monorepo with `YF_FORCE_REGISTRY=1`.
 
 ## Run it
 
 ```bash
 cp .env.example .env     # point the URLs at your YF deployment
-npm install
+npm install              # monorepo: links local SDK src · standalone: pulls from public npm
 npm start                # http://localhost:3020
 ```
 
 Production build: `npm run build`. Type check: `npm run typecheck`.
+Force the published-package path: `YF_FORCE_REGISTRY=1 npm run build`.
 
-Two things the scripts handle for you, worth knowing about:
+Two things worth knowing about:
 
-- **SDK dependencies** — npm does *not* install the dependencies of
-  `file:`-linked packages, so this app's `postinstall` runs
-  `npm install` inside both SDK directories. Without it, a fresh
-  clone fails to build with missing-module errors from the SDK
-  sources.
+- **SDK deps.** `@yieldfabric/*` are `optionalDependencies` (so a monorepo
+  install doesn't require the registry while you work locally). The
+  `postinstall` (`scripts/setup-sdks.js`) installs the siblings' own deps
+  when they're present; otherwise it's a no-op and the published packages
+  bring their own tree. The wallet's optional Stripe-KYC provider needs
+  `@stripe/stripe-js` (already in `dependencies`) so the build resolves its
+  lazy import; drop it if you strip the KYC surface.
 - **Dev port** — `.env` pins `PORT=3020` because CRA's default
   (`:3000`) collides with the local YF auth service.
 
@@ -126,6 +163,33 @@ receives the user's message and `{ onChunk, onComplete, onError }`
 handlers; everything else (streaming text, markdown, citations,
 input UX) is the terminal's job.
 
+### 5. The Tools tab — OpenAI-compatible tool calling
+
+A second surface (`/tools`), separate because tool calling is the
+**OpenAI-compatible `/v1` agent loop**, not the native terminal:
+
+| File | What |
+|---|---|
+| `src/services/v1.ts` | A thin `fetch` client for `POST /v1/chat/completions` in the OpenAI wire shape, plus `runToolLoop()` — the standard loop (model → `tool_calls` → execute → `tool` results → repeat → final). |
+| `src/tools/clientTools.ts` | The browser-executed tools the model can call (`get_current_time`, `calculate` — with a safe arithmetic evaluator; never `eval`). |
+| `src/pages/Tools.tsx` | Renders the loop step by step, with `tool_choice` control and the optional `yf` extension (workspace grounding + server-side `rag_search`). |
+
+The page uses `fetch` for transparency; the same request shapes work
+**unchanged** with the official OpenAI SDK in a backend
+(`new OpenAI({ baseURL, apiKey: 'yf_api_…' })`).
+
+### 6. The Analytics tab — usage across every surface
+
+Because `/v1` is stateless (no conversation thread), its traffic
+doesn't appear in the chat Usage drawer's per-conversation view. The
+**Analytics** tab (`/analytics`) is the "see everything" view:
+`src/pages/Analytics.tsx` calls `GET /api/usage/aggregate` (in
+`src/services/usage.ts`) — a live, entity-scoped rollup of every
+metered call grouped by feature + model, including failures and
+today's activity — and renders totals, by-surface / by-model
+breakdowns, and a cross-surface activity feed (each call drilling into
+the same `…/calls/{id}/log` audit panel as the chat drawer).
+
 ## Where to go from here
 
 The request body in `src/services/chat.ts` is the doorway to the rest
@@ -140,10 +204,13 @@ of the platform — each of these is one field, not one integration:
   reference.
 - **Multi-agent reasoning**: `POST /pipelines/run` with
   `kind: "reasoning"`, then chat over the resulting knowledge graph.
-- **Backend/server-side LLM access**: point any **OpenAI SDK** at
-  `…/v1` with a `yf_api_…` API key as the `api_key` — chat
-  completions, tool calling, embeddings, and the `yf` extension for
-  RAG grounding and server-executed tools.
+- **Tool calling & the OpenAI-compatible `/v1` surface**: see the
+  **Tools** tab and its files (`src/services/v1.ts`,
+  `src/tools/clientTools.ts`, `src/pages/Tools.tsx`). It uses a thin
+  `fetch` client so you can read the exact wire shapes; a Node
+  backend would use the official OpenAI SDK unchanged —
+  `new OpenAI({ baseURL: '…/v1', apiKey: 'yf_api_…' })` — with the
+  same `tools` / `tool_choice` / `tool_calls` protocol.
 - **Payments and obligations**: this example disables the global
   on-chain signer; `tncshell/frontend` in the same repo is the
   reference for adding financial rails (mount `<SignatureWorkflow />`

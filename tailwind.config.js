@@ -15,8 +15,15 @@
 module.exports = {
   content: [
     './src/**/*.{js,jsx,ts,tsx}',
+    // Scan wherever the SDK classes live. Globs that match nothing are
+    // no-ops, so listing both lets the same config serve either mode:
+    //   - local source (monorepo dev): the sibling src trees
     '../../yieldfabric-wallet-sdk/src/**/*.{js,jsx,ts,tsx}',
     '../../yieldfabric-terminal/src/**/*.{js,jsx,ts,tsx}',
+    //   - published packages (standalone): the compiled dist (className
+    //     strings intact — tsup does not minify)
+    './node_modules/@yieldfabric/wallet/dist/**/*.{js,cjs}',
+    './node_modules/@yieldfabric/terminal/dist/**/*.{js,cjs}',
   ],
   theme: {
     extend: {

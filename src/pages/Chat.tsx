@@ -14,6 +14,7 @@ import {
 import { type ThreadUsage, fetchThreadUsage, formatTokens } from '../services/usage';
 import UsageDrawer from '../components/UsageDrawer';
 import DocLink from '../components/DocLink';
+import ModeNav from '../components/ModeNav';
 import { lightTerminalTheme } from '../theme/terminalTheme';
 import { AGENTS_API_URL } from '../config';
 import { DOCS } from '../docs';
@@ -234,6 +235,7 @@ export default function Chat() {
             </DocLink>
           </span>
         </span>
+        <ModeNav active="chat" />
 
         <div className="ml-auto flex items-center gap-3">
           <label className="flex items-center gap-2 text-xs text-ink-soft">

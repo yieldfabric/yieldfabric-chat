@@ -16,6 +16,9 @@ export const DOCS = {
   guideHistory: `${DOCS_BASE}/docs/guides/llm-access#history-and-persistence-read-this-before-relying-on-it`,
   /** Auth flows (wallet-SDK sign-in, API keys). */
   auth: `${DOCS_BASE}/docs/guides/building-with-yf#authenticate-in-30-seconds`,
+  /** The OpenAI-compatible /v1 surface (used by the Tools page). */
+  guideV1: `${DOCS_BASE}/docs/guides/llm-access#the-openai-compatible-endpoint-v1`,
+  guideYfExtension: `${DOCS_BASE}/docs/guides/llm-access#the-yf-extension-your-substrate-zero-plumbing`,
   /** Agents API reference — every endpoint this app calls. */
   agentsApi: `${DOCS_BASE}/docs/api/agents`,
   opChat: `${DOCS_BASE}/docs/api/agents/post-chat`,
@@ -24,4 +27,16 @@ export const DOCS = {
   opUsageDetail: `${DOCS_BASE}/docs/api/agents/get-api-usage-detail`,
   opUsageSummary: `${DOCS_BASE}/docs/api/agents/get-api-usage-summary`,
   opCallLog: `${DOCS_BASE}/docs/api/agents/get-api-usage-calls-usage_event_id-log`,
+  opUsageAggregate: `${DOCS_BASE}/docs/api/agents/get-api-usage-aggregate`,
+  opV1Chat: `${DOCS_BASE}/docs/api/agents/post-v1-chat-completions`,
+  opV1Models: `${DOCS_BASE}/docs/api/agents/get-v1-models`,
+  // Pipelines (reasoning) + knowledge graphs (file→KG).
+  guideReasoning: `${DOCS_BASE}/docs/guides/llm-access#following-a-reasoning-run-end-to-end`,
+  guideFileKg: `${DOCS_BASE}/docs/guides/llm-access#file-to-knowledge-graph`,
+  guideFrames: `${DOCS_BASE}/docs/guides/llm-access#going-deeper-from-citation-to-frame`,
+  opPipelineRun: `${DOCS_BASE}/docs/api/agents/post-pipelines-run`,
+  opPipelineEvents: `${DOCS_BASE}/docs/api/agents/get-pipelines-run_id-events`,
+  opKgSummary: `${DOCS_BASE}/docs/api/agents/get-kgs-id-summary`,
+  opKgFrames: `${DOCS_BASE}/docs/api/agents/get-kgs-id-frames`,
+  opKgList: `${DOCS_BASE}/docs/api/agents/get-kgs`,
 };

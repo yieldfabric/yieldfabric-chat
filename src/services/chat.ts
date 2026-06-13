@@ -39,6 +39,14 @@ export interface ChatStreamBody {
   skip_rag?: boolean
   /** Per-request output-token cap (server-clamped). */
   max_output_tokens?: number
+  /** Ground the reply in a single knowledge graph — answers cite it.
+   *  Used by the "Chat with this KG" panel. */
+  kg_id?: string | null
+  /** Workspace scope (improves grounding when the KG is in a group). */
+  working_group_id?: string | null
+  /** Reply AS a specific agent (e.g. one of a reasoning run's team).
+   *  The backend loads that agent's persona + the KG context. */
+  as_agent?: string
 }
 
 export interface ChatStreamHandlers {

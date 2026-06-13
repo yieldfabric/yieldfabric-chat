@@ -1,15 +1,15 @@
 import React from 'react';
+import { Link } from 'react-router-dom';
 
 import {
-  type CallLog,
   type DailyUsage,
   type ThreadUsage,
   type UsageEvent,
   aggregateByModel,
-  fetchCallLog,
   fetchUsageSummary,
   formatTokens,
 } from '../services/usage';
+import CallAudit from './CallAudit';
 import DocLink from './DocLink';
 import { DOCS } from '../docs';
 
@@ -208,6 +208,15 @@ export default function UsageDrawer({
             <h3 className="text-[11px] font-semibold uppercase tracking-wider text-ink-mute mb-2">
               Last 7 days — all conversations
             </h3>
+            <p className="text-[11px] text-ink-mute -mt-1 mb-2">
+              This drawer is conversation-centric. For usage across <em>every</em> surface —
+              chat, the <code className="text-[10px]">/v1</code> tools endpoint, embeddings — open
+              the{' '}
+              <Link to="/analytics" className="text-brand-600 hover:text-brand-700 underline">
+                Analytics tab
+              </Link>
+              .
+            </p>
             {summaryError ? (
               <p className="text-xs text-status-error-text">{summaryError}</p>
             ) : summary === null ? (
@@ -335,70 +344,6 @@ function CallRow({ call }: { call: UsageEvent }) {
   );
 }
 
-/** Lazy-loaded audit panel: the exact prompt messages + output. */
-function CallAudit({ usageEventId }: { usageEventId: string }) {
-  const [log, setLog] = React.useState<CallLog | null>(null);
-  const [error, setError] = React.useState<string | null>(null);
-
-  React.useEffect(() => {
-    let cancelled = false;
-    fetchCallLog(usageEventId)
-      .then((l) => {
-        if (!cancelled) setLog(l);
-      })
-      .catch((err: unknown) => {
-        if (!cancelled) setError(err instanceof Error ? err.message : String(err));
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [usageEventId]);
-
-  if (error) {
-    return <p className="mt-1.5 text-[11px] text-status-warning-text">{error}</p>;
-  }
-  if (!log) {
-    return <p className="mt-1.5 text-[11px] text-ink-mute">Loading audit log…</p>;
-  }
-
-  const prompts: Array<{ role?: string; content?: string }> = Array.isArray(log.promptMessages)
-    ? (log.promptMessages as Array<{ role?: string; content?: string }>)
-    : [];
-
-  return (
-    <div className="mt-1.5 rounded-md border border-line bg-surface-alt p-2 space-y-1.5">
-      <div className="max-h-56 overflow-y-auto space-y-1.5">
-        {prompts.length > 0 ? (
-          prompts.map((m, i) => (
-            <div key={i}>
-              <span className="text-[9px] font-semibold uppercase tracking-wider text-ink-mute">
-                {m.role ?? 'message'}
-              </span>
-              <pre className="mt-0.5 whitespace-pre-wrap break-words text-[10px] leading-relaxed text-ink font-mono bg-white border border-line-soft rounded p-1.5">
-                {typeof m.content === 'string' ? m.content : JSON.stringify(m, null, 2)}
-              </pre>
-            </div>
-          ))
-        ) : (
-          <pre className="whitespace-pre-wrap break-words text-[10px] leading-relaxed text-ink font-mono bg-white border border-line-soft rounded p-1.5">
-            {JSON.stringify(log.promptMessages, null, 2)}
-          </pre>
-        )}
-        <div>
-          <span className="text-[9px] font-semibold uppercase tracking-wider text-emerald-700">
-            output
-          </span>
-          <pre className="mt-0.5 whitespace-pre-wrap break-words text-[10px] leading-relaxed text-ink font-mono bg-white border border-line-soft rounded p-1.5">
-            {log.output || '(empty)'}
-          </pre>
-        </div>
-      </div>
-      {log.maxTokensRequested !== null && (
-        <p className="text-[10px] text-ink-mute">max_tokens requested: {log.maxTokensRequested}</p>
-      )}
-    </div>
-  );
-}
 
 /** 7-day rollups: total, then proportion bars by model and by feature. */
 function SummaryBreakdown({ rows }: { rows: DailyUsage[] }) {

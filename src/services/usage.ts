@@ -226,6 +226,89 @@ export async function fetchCallLog(usageEventId: string): Promise<CallLog> {
   }
 }
 
+// ── Cross-surface analytics ──────────────────────────────────────────
+
+const fmtDate = (d: Date) => d.toISOString().slice(0, 10);
+const windowStart = (days: number) =>
+  new Date(Date.now() - (days - 1) * 24 * 60 * 60 * 1000);
+
+/** One (feature, model) group from GET /api/usage/aggregate. */
+export interface AggregateGroup {
+  feature: string;
+  model: string;
+  calls: number;
+  prompt_tokens: number;
+  completion_tokens: number;
+  total_tokens: number;
+  error_count: number;
+  avg_latency_ms: number;
+}
+
+export interface UsageAggregate {
+  groups: AggregateGroup[];
+  totals: {
+    calls: number;
+    prompt_tokens: number;
+    completion_tokens: number;
+    total_tokens: number;
+    error_count: number;
+  };
+}
+
+/** Live, cross-surface usage over the trailing `days` window — every
+ *  feature/model the caller touched, including failures and today's
+ *  activity (no rollup lag). One query, entity-scoped server-side. */
+export async function fetchUsageAggregate(days: number): Promise<UsageAggregate> {
+  const res = await fetch(
+    `${AGENTS_API_URL}/api/usage/aggregate?start_date=${fmtDate(windowStart(days))}` +
+      `&end_date=${fmtDate(new Date())}`,
+    { headers: authHeaders() },
+  );
+  if (!res.ok) throw new Error(`GET /api/usage/aggregate failed: HTTP ${res.status}`);
+  const json = await res.json();
+  return {
+    groups: json?.data ?? [],
+    totals: json?.totals ?? {
+      calls: 0,
+      prompt_tokens: 0,
+      completion_tokens: 0,
+      total_tokens: 0,
+      error_count: 0,
+    },
+  };
+}
+
+/** Recent calls across ALL surfaces (no thread filter) for the
+ *  activity feed. Newest first. */
+export async function fetchRecentActivity(days: number, limit = 100): Promise<UsageEvent[]> {
+  const res = await fetch(
+    `${AGENTS_API_URL}/api/usage/detail?start_date=${fmtDate(windowStart(days))}` +
+      `&end_date=${fmtDate(new Date())}&limit=${Math.min(limit, 500)}`,
+    { headers: authHeaders() },
+  );
+  if (!res.ok) throw new Error(`GET /api/usage/detail failed: HTTP ${res.status}`);
+  const json = await res.json();
+  return json?.data ?? [];
+}
+
+/** Human-readable label for a metering `feature` (the raw surface
+ *  identifier). Unknown features fall through to the raw value. */
+const FEATURE_LABELS: Record<string, string> = {
+  chat: 'Chat',
+  compat_chat: 'OpenAI /v1 chat',
+  compat_embed: 'OpenAI /v1 embeddings',
+  builder_assistant: 'Pipeline builder',
+  chat_agent: 'Agent persona',
+  rag_query: 'RAG query',
+  workflow: 'Workflow',
+  economy_internal: 'Economy',
+  asset_catalog: 'Asset catalog',
+};
+
+export function featureLabel(feature: string): string {
+  return FEATURE_LABELS[feature] ?? feature;
+}
+
 /** 1234 → "1.2k", 1234567 → "1.23M", 999 → "999". */
 export function formatTokens(n: number): string {
   if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(2)}M`
