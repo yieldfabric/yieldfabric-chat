@@ -261,7 +261,11 @@ export async function fetchKgFrames(kgId: string, limit = 60): Promise<KgFrame[]
 
 /** Recent KGs the user can see. NOTE: this lists only KGs scoped to a
  *  working group the user belongs to — an ungrouped run's KG won't
- *  appear here, though you can still open it directly by its kg_id. */
+ *  appear here, though you can still open it directly by its kg_id.
+ *
+ *  The `node_count` / `edge_count` per row are counted LIVE from the
+ *  frame substrate (not stale denormalised columns), so they're
+ *  accurate even mid-ingest while a run is still adding frames. */
 export async function listKgs(): Promise<KgListItem[]> {
   const res = await fetch(`${AGENTS_API_URL}/kgs`, { headers: authHeaders(false) });
   if (!res.ok) throw new Error(await readError(res, 'list kgs'));

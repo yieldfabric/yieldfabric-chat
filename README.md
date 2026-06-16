@@ -34,7 +34,9 @@ What you get out of the box:
   per-model aggregates (the unit that maps to cost), every message's
   prompt/completion split with the per-call breakdown behind it
   (classifier, retrieval, completion), the exact prompt + output of
-  any call for audit (`GET /api/usage/calls/{id}/log`), and your
+  any call for audit (`GET /api/usage/calls/{id}/log`) — including the
+  **streaming** chat replies that are this app's primary path, whose
+  transcript the agents service records at stream end — and your
   7-day rollups by model and feature.
 - **Tool calling on `/v1`** — a **Tools** page (the second tab) that
   drives the OpenAI-compatible `POST /v1/chat/completions` endpoint
@@ -46,8 +48,12 @@ What you get out of the box:
 - **Cross-surface Analytics** — an **Analytics** page (third tab) that
   shows *all* your LLM usage across every surface (native chat, `/v1`
   tools, embeddings, …) from `GET /api/usage/aggregate`: live totals
-  (incl. failures and today's calls), breakdowns by surface and model,
-  and a recent-activity feed with the same per-call audit drill-down.
+  (incl. failures and today's calls; the tokens shown are real
+  per-(feature, model) sums), breakdowns by surface and model, and a
+  recent-activity feed with the same per-call audit drill-down.
+  The feed is **embed-aware**: embedding calls have no prompt/output
+  transcript to audit, so they show an `embedding` marker instead of an
+  audit button (the server never writes a call-log for them).
 - **Multi-agent reasoning** — a **Reasoning** page that starts a run
   (`POST /pipelines/run`, kind: reasoning), streams the agents'
   narrative + KG growth live over SSE, **surfaces the agent team as it
@@ -60,10 +66,11 @@ What you get out of the box:
 - **File → knowledge graph** — a **Knowledge** page that uploads a
   document (`POST /pipelines/ingest-document-upload`; the server
   chunks, embeds, and extracts frames), streams ingestion over the
-  same SSE, and renders the resulting graph (frame counts + the typed
-  frames) — with the same chat-with-the-KG and reason-over affordances.
-  All of it shares one `pipelines.ts` service and the `PipelineRunView`
-  / `KgView` / `KgChat` components.
+  same SSE, and renders the graph **as it builds** — reading the live
+  node/edge count straight off the stream and showing the graph while
+  the run is still in flight — with the same chat-with-the-KG and
+  reason-over affordances. All of it shares one `pipelines.ts` service
+  and the `PipelineRunView` / `KgView` / `KgChat` components.
 
 Every LLM call is authenticated, per-entity metered, and (when you add
 `working_group_id` / `kg_id`) grounded in your YieldFabric knowledge
@@ -72,9 +79,12 @@ substrate — without your app holding any upstream LLM keys.
 ## Prerequisites
 
 - Node 18+
-- A reachable YieldFabric deployment and a user account on it. Either:
-  - a **local stack** (auth `:3000`, payments `:3002`, agents `:3001`), or
-  - the **hosted platform** (`auth.yieldfabric.com` / `agents.yieldfabric.com`).
+- A reachable YieldFabric deployment and a user account on it — the
+  **hosted platform** (`auth.yieldfabric.com` · `pay.yieldfabric.com` ·
+  `agents.yieldfabric.com`), or your own. Copy `.env.example` and point
+  the service URLs at your deployment. To confirm the API version your
+  app integrates against, `GET agents.yieldfabric.com/version` (no JWT)
+  — it reports the `api_version` the deployment actually serves.
 - **SDK resolution is automatic — local source if present, else the
   published packages.** No manual switch:
   - **In the monorepo** (the sibling repos exist at
@@ -95,7 +105,7 @@ substrate — without your app holding any upstream LLM keys.
 ```bash
 cp .env.example .env     # point the URLs at your YF deployment
 npm install              # monorepo: links local SDK src · standalone: pulls from public npm
-npm start                # http://localhost:3020
+npm start                # start the dev server
 ```
 
 Production build: `npm run build`. Type check: `npm run typecheck`.
@@ -110,8 +120,8 @@ Two things worth knowing about:
   bring their own tree. The wallet's optional Stripe-KYC provider needs
   `@stripe/stripe-js` (already in `dependencies`) so the build resolves its
   lazy import; drop it if you strip the KYC surface.
-- **Dev port** — `.env` pins `PORT=3020` because CRA's default
-  (`:3000`) collides with the local YF auth service.
+- **Dev port** — `.env` pins `PORT=3020` so the dev server uses a
+  stable local port.
 
 ## How it's wired — the four files that matter
 
@@ -189,6 +199,72 @@ metered call grouped by feature + model, including failures and
 today's activity — and renders totals, by-surface / by-model
 breakdowns, and a cross-surface activity feed (each call drilling into
 the same `…/calls/{id}/log` audit panel as the chat drawer).
+
+Every chat/reasoning call is auditable here — including the
+**streaming** chat replies that are this app's primary path (the agents
+service records their prompt + accumulated output as the call-log
+transcript at stream end). Embeddings are the one exception, so the
+feed (`ActivityRow`) is **embed-aware**: a call with `call_type ===
+'embed'` has no prompt/output transcript — the server never writes a
+call-log for it — so `…/calls/{id}/log` would have nothing to return.
+`ActivityRow` checks `auditable = event.call_type !== 'embed'` and
+renders a plain `embedding` marker for those rows instead of an `audit`
+toggle; only auditable calls open the `CallAudit` panel (`fetchCallLog`
+→ `GET /api/usage/calls/{id}/log`).
+
+### 7. The Knowledge tab — a file → knowledge graph, rendered live
+
+`src/pages/Knowledge.tsx` uploads a document to
+`POST /pipelines/ingest-document-upload` (multipart — `ingestDocument`
+in `src/services/pipelines.ts` lets the browser set the boundary). The
+server chunks, embeds, and extracts typed **frames**; the start returns
+`{ run_id, kg_id }` and the same `PipelineRunView` /
+`openPipelineEvents` SSE machinery the Reasoning tab uses renders
+progress. The difference is the event shape: ingestion emits the
+agents service's `transform_*` frames, and `PipelineRunView`'s
+`applyEvent` reducer (`src/components/PipelineRunView.tsx`) handles
+them:
+
+| SSE event | Field read | What `applyEvent` does |
+|---|---|---|
+| `transform_started` | `total_inputs` | "Extracting (N chunks)…" — moves to the `running` phase. |
+| `transform_extension` kind `extraction_activity` | `payload.phase`, `payload.message` | Appends the message (or "Consolidating…" for a `consolidation*` phase) — surfaces the slow extract/consolidate phases so a large ingest doesn't look frozen. |
+| `transform_extension` kind `extraction_chunk` | `payload.chunk_index`, `payload.chunk_total` | "Chunk i of N" progress. |
+| `transform_complete` kind `file_extraction` | `node_count`, `edge_count` | **Reads the final count straight off the stream** — not the stale `kg.node_count` column. Arrives before `pipeline_complete`. |
+| `pipeline_complete` | `kg_id`, `total_nodes`, `total_edges` | Terminal. Count is taken as a `Math.max` against what `transform_complete` already established (the terminal count can lag the DB substrate), and `kg_id` only replaces the current one when non-empty. |
+
+Count-setting events (`turn_complete`, `k_g_updated`,
+`pipeline_complete`) are all guarded — a count only ever advances via
+`Math.max`, so a late `0` from a turn that didn't grow the KG can't
+reset a count an earlier event established. This is the "processed but
+shows 0 nodes" fix.
+
+**Viewing the KG the run built — `KgView`'s `refreshKey`.** Frames are
+written to the substrate over the life of the run, so a one-shot fetch
+at mount captures an empty/partial snapshot — and since `kgId` never
+changes, the effect would never re-fire. `KgView`
+(`src/components/PipelineRunView.tsx` renders it; component in
+`src/components/KgView.tsx`) takes an optional `refreshKey` prop added
+to its effect deps alongside `kgId`. `PipelineRunView` passes
+`refreshKey={`${state.phase}:${state.nodes}:${state.edges}`}`, so
+`KgView` re-reads `GET /kgs/{id}/summary` + `/frames` (`fetchKgSummary`
+/ `fetchKgFrames`) every time the run's phase or live count advances —
+including at completion, when the finished frames have landed. A
+`refreshKey`-driven re-fetch does **not** blank the prior frames
+(only a genuine `kgId` switch does), so the graph never flashes empty
+between reads. `PipelineRunView` renders `KgView` for any non-failed
+run that has a `kgId` (not gated on completion), so the graph fills in
+as the run progresses; the grounded `KgChat` stays gated on completion
+so you don't chat over a half-built KG. **This is the canonical
+"view a KG the run built" pattern.**
+
+**Refreshing the recent-KG list.** `Knowledge.tsx` no longer refreshes
+its list on a fixed timer — ingestion can take minutes — but passes
+`onComplete={loadKgs}` to `PipelineRunView`, which fires the callback
+once when the stream reaches a terminal event (held in a ref so it
+doesn't re-open the SSE stream). The KG row appears once the run
+actually finishes (and only for group-scoped runs — `GET /kgs` lists
+only KGs in working groups you belong to).
 
 ## Where to go from here
 

@@ -6,6 +6,11 @@ import { type CallLog, fetchCallLog } from '../services/usage';
  * Lazy-loaded audit panel for one metered LLM call: the exact prompt
  * messages and output, from `GET /api/usage/calls/{id}/log`. Shared by
  * the conversation usage drawer and the cross-surface Analytics feed.
+ *
+ * Every chat/reasoning call is auditable here — including STREAMING chat
+ * replies (this app's primary chat path via `POST /chat` over SSE), whose
+ * transcript the agents service records at stream end. The only metered
+ * call type with no transcript is embeddings.
  */
 export default function CallAudit({ usageEventId }: { usageEventId: string }) {
   const [log, setLog] = React.useState<CallLog | null>(null);

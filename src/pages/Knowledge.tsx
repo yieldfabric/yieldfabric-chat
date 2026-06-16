@@ -65,9 +65,11 @@ export default function Knowledge() {
         workingGroupId: workingGroupId.trim() || undefined,
       });
       setRun(r);
-      // Refresh the list shortly after — the KG row appears once the
-      // run registers (and only if it's group-scoped).
-      setTimeout(loadKgs, 2500);
+      // The KG list is refreshed when the run reaches a terminal state
+      // (see PipelineRunView `onComplete` below) — not on a fixed delay.
+      // Ingestion can take minutes for a large document (chunk extraction
+      // + Phase-B consolidation), so a 2.5s timer fired long before the
+      // run finished and left the list showing the pre-ingest state.
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
@@ -173,6 +175,7 @@ export default function Knowledge() {
                     workingGroupId: workingGroupId.trim() || undefined,
                   })
                 }
+                onComplete={loadKgs}
               />
             </section>
           )}

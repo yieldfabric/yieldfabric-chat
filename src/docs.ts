@@ -39,4 +39,9 @@ export const DOCS = {
   opKgSummary: `${DOCS_BASE}/docs/api/agents/get-kgs-id-summary`,
   opKgFrames: `${DOCS_BASE}/docs/api/agents/get-kgs-id-frames`,
   opKgList: `${DOCS_BASE}/docs/api/agents/get-kgs`,
+  // Deployment verification: GET /version is unauthenticated and reports
+  // the api_version a server actually serves — confirm your app integrates
+  // against the version you expect before you hold a credential.
+  opVersion: `${DOCS_BASE}/docs/api/agents/get-version`,
+  guideVersioning: `${DOCS_BASE}/docs/guides/versioning`,
 };

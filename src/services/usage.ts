@@ -5,6 +5,12 @@
  *   GET /api/usage/summary                      — daily rollups (model × feature)
  *   GET /api/usage/calls/{usage_event_id}/log   — audit: full prompt + output
  *
+ * Both STREAMING and non-streaming chat/reasoning calls are audited:
+ * the agents service records the prompt + accumulated output as the
+ * call-log transcript at stream end too, so a streamed chat reply has a
+ * full transcript here — not just usage. Embeddings are the one call
+ * type with no transcript (no prompt/output to log).
+ *
  * Per-message attribution works because the platform stamps every
  * call with the conversation `thread_id`, and ALL calls made while
  * answering one user message (intent classifier, retrieval, the
@@ -211,7 +217,16 @@ export async function fetchCallLog(usageEventId: string): Promise<CallLog> {
     { headers: authHeaders() },
   )
   if (res.status === 404) {
-    throw new Error('No log for this call — call logging may be disabled, or the row expired (30-day retention)')
+    // Chat/reasoning calls — streaming AND non-streaming — ARE audited, so a
+    // missing transcript means one of three things, not "replies aren't
+    // logged": (a) it was an embedding (logless by design — no prompt/output),
+    // (b) call logging is disabled server-side
+    // (agents.metering.call_log_enabled), or (c) the row aged past the 30-day
+    // retention window.
+    throw new Error(
+      'No transcript for this call — it was an embedding (no prompt/output to log), ' +
+        'call logging is disabled server-side, or the row aged past the 30-day retention window',
+    )
   }
   if (!res.ok) {
     throw new Error(`GET /api/usage/calls/…/log failed: HTTP ${res.status}`)
@@ -257,7 +272,8 @@ export interface UsageAggregate {
 
 /** Live, cross-surface usage over the trailing `days` window — every
  *  feature/model the caller touched, including failures and today's
- *  activity (no rollup lag). One query, entity-scoped server-side. */
+ *  activity (no rollup lag). One query, entity-scoped server-side. The
+ *  token counts are real per-(feature, model) sums. */
 export async function fetchUsageAggregate(days: number): Promise<UsageAggregate> {
   const res = await fetch(
     `${AGENTS_API_URL}/api/usage/aggregate?start_date=${fmtDate(windowStart(days))}` +

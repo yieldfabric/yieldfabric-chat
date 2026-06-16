@@ -15,21 +15,34 @@ import { DOCS } from '../docs';
  * themselves. A KG is the durable substrate every pipeline reads from
  * and writes to — this is the "what did it actually build" view.
  */
-export default function KgView({ kgId }: { kgId: string }) {
+export default function KgView({
+  kgId,
+  refreshKey,
+}: {
+  kgId: string;
+  /** Bump to force a re-fetch of /summary + /frames without remounting.
+   *  Frames are written to the substrate over the life of a run, so a
+   *  one-shot fetch at mount captures an empty/partial snapshot and — since
+   *  kgId never changes — would never refresh. The parent passes the run's
+   *  live count/phase here so KgView re-reads once the run advances and the
+   *  frames have actually landed. */
+  refreshKey?: string | number;
+}) {
   const [summary, setSummary] = React.useState<KgSummary | null>(null);
   const [frames, setFrames] = React.useState<KgFrame[] | null>(null);
   const [error, setError] = React.useState<string | null>(null);
 
   React.useEffect(() => {
     let cancelled = false;
-    setSummary(null);
-    setFrames(null);
-    setError(null);
+    // Don't blank the view on a refresh — only on a genuine KG switch. A
+    // refreshKey-driven re-fetch keeps the prior frames visible until the new
+    // ones arrive, so the graph doesn't flash empty between reads.
     Promise.all([fetchKgSummary(kgId), fetchKgFrames(kgId, 60)])
       .then(([s, f]) => {
         if (cancelled) return;
         setSummary(s);
         setFrames(f);
+        setError(null);
       })
       .catch((e: unknown) => {
         if (!cancelled) setError(e instanceof Error ? e.message : String(e));
@@ -37,7 +50,8 @@ export default function KgView({ kgId }: { kgId: string }) {
     return () => {
       cancelled = true;
     };
-  }, [kgId]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [kgId, refreshKey]);
 
   if (error) {
     return <p className="text-[12px] text-status-error-text">Could not load the KG: {error}</p>;

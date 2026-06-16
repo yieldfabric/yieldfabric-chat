@@ -48,6 +48,21 @@ function applyEvent(s: RunState, e: PipelineEvent): RunState {
       return { ...s, activity: [...s.activity, `Run started · ${(e as any).total_steps} steps`] };
     case 'pipeline_step_started':
       return { ...s, activity: [...s.activity, `Step: ${(e as any).name}`] };
+    // Document ingest (file → KG) emits transform_* events. The chat
+    // previously ignored them, so a long ingest sat at "running / 0 nodes"
+    // and looked frozen — while yieldfabric-app, which DOES handle them,
+    // showed extracting/consolidating progress and the live count. Port it.
+    case 'transform_started': {
+      const total = (e as any).total_inputs;
+      return {
+        ...s,
+        phase: 'running',
+        activity: [
+          ...s.activity,
+          typeof total === 'number' ? `Extracting (${total} chunks)…` : 'Extracting…',
+        ],
+      };
+    }
     case 'transform_extension': {
       const kind = (e as any).kind;
       const payload = (e as any).payload ?? {};
@@ -59,6 +74,28 @@ function applyEvent(s: RunState, e: PipelineEvent): RunState {
       if (kind === 'narrative_text' && payload.text) {
         return { ...s, narrative: [...s.narrative, String(payload.text)] };
       }
+      // Per-chunk extraction + consolidation progress — the slow phases of a
+      // file ingest. Surfacing these is what keeps the run from looking
+      // frozen while the backend grinds through a large document.
+      if (kind === 'extraction_activity') {
+        const ph = typeof payload.phase === 'string' ? payload.phase : '';
+        const msg =
+          typeof payload.message === 'string'
+            ? String(payload.message)
+            : ph.startsWith('consolidation')
+              ? 'Consolidating…'
+              : 'Extracting…';
+        return { ...s, phase: 'running', activity: [...s.activity, msg] };
+      }
+      if (kind === 'extraction_chunk') {
+        const idx = payload.chunk_index;
+        const tot = payload.chunk_total;
+        const msg =
+          typeof idx === 'number' && typeof tot === 'number'
+            ? `Chunk ${idx + 1} of ${tot}`
+            : 'Processing chunk…';
+        return { ...s, phase: 'running', activity: [...s.activity, msg] };
+      }
       return s;
     }
     case 'turn_started':
@@ -67,13 +104,19 @@ function applyEvent(s: RunState, e: PipelineEvent): RunState {
         phase: 'running',
         activity: [...s.activity, `Turn ${(e as any).turn} — ${(e as any).input_label ?? (e as any).input_kind}`],
       };
-    case 'turn_complete':
+    case 'turn_complete': {
+      const tn = (e as any).total_nodes as number | undefined;
+      const te = (e as any).total_edges as number | undefined;
       return {
         ...s,
-        nodes: (e as any).total_nodes,
-        edges: (e as any).total_edges,
+        // Guard like the app (don't clobber with a non-number), hardened with
+        // max so a late 0 from a turn that didn't grow the KG can't reset a
+        // count an earlier event established.
+        nodes: typeof tn === 'number' ? Math.max(tn, s.nodes ?? 0) : s.nodes,
+        edges: typeof te === 'number' ? Math.max(te, s.edges ?? 0) : s.edges,
         activity: [...s.activity, `Turn ${(e as any).turn} complete`],
       };
+    }
     case 'agent_invoked': {
       const id = (e as any).agent_id as string;
       const seen = s.agentsSeen.includes(id) ? s.agentsSeen : [...s.agentsSeen, id];
@@ -81,8 +124,15 @@ function applyEvent(s: RunState, e: PipelineEvent): RunState {
     }
     // serde splits the `KGUpdated` acronym → wire name is `k_g_updated`.
     case 'k_g_updated':
-    case 'kg_updated':
-      return { ...s, nodes: (e as any).total_nodes, edges: (e as any).total_edges };
+    case 'kg_updated': {
+      const tn = (e as any).total_nodes as number | undefined;
+      const te = (e as any).total_edges as number | undefined;
+      return {
+        ...s,
+        nodes: typeof tn === 'number' ? Math.max(tn, s.nodes ?? 0) : s.nodes,
+        edges: typeof te === 'number' ? Math.max(te, s.edges ?? 0) : s.edges,
+      };
+    }
     case 'persisted':
       return {
         ...s,
@@ -96,14 +146,46 @@ function applyEvent(s: RunState, e: PipelineEvent): RunState {
       };
     case 'human_input_received':
       return { ...s, phase: 'running', waitingPrompt: undefined, activity: [...s.activity, 'Input received'] };
-    case 'pipeline_complete':
+    // The document-ingest's terminal transform — carries the final node/edge
+    // count for a file → KG run, and arrives BEFORE pipeline_complete. The app
+    // reads the count from here (not the stale kg.node_count column); without
+    // this the chat showed "0 nodes" even after extraction finished.
+    case 'transform_complete': {
+      const kind = (e as any).kind;
+      if (kind !== 'file_extraction') return s;
+      const nodeCount = (e as any).node_count as number | undefined;
+      const edgeCount = (e as any).edge_count as number | undefined;
+      return {
+        ...s,
+        nodes: typeof nodeCount === 'number' ? nodeCount : s.nodes,
+        edges: typeof edgeCount === 'number' ? edgeCount : s.edges,
+        activity: [
+          ...s.activity,
+          `Extraction complete — ${nodeCount ?? s.nodes ?? 0} entities, ${edgeCount ?? s.edges ?? 0} edges`,
+        ],
+      };
+    }
+    // Terminal event. It carries kg.nodes.len() from the in-memory KG object,
+    // which for a file ingest can lag the DB substrate transform_complete
+    // already counted (extraction writes frames to kgf.kg_frames; the in-memory
+    // KG isn't always repopulated). So NEVER let pipeline_complete's count
+    // REDUCE a real count transform_complete established — take the max — and
+    // never switch kgId to an empty/missing value (KgView re-fetches on kgId
+    // change; switching it to undefined blanks the graph). This mirrors the
+    // app's `typeof === 'number' ? … : prev` guard, hardened with a max so a
+    // terminal 0 can't clobber a populated graph.
+    case 'pipeline_complete': {
+      const kgId = (e as any).kg_id as string | undefined;
+      const totalNodes = (e as any).total_nodes as number | undefined;
+      const totalEdges = (e as any).total_edges as number | undefined;
       return {
         ...s,
         phase: 'complete',
-        kgId: (e as any).kg_id,
-        nodes: (e as any).total_nodes,
-        edges: (e as any).total_edges,
+        kgId: kgId || s.kgId,
+        nodes: typeof totalNodes === 'number' ? Math.max(totalNodes, s.nodes ?? 0) : s.nodes,
+        edges: typeof totalEdges === 'number' ? Math.max(totalEdges, s.edges ?? 0) : s.edges,
       };
+    }
     case 'pipeline_failed':
       return { ...s, phase: 'failed', error: (e as any).error };
     default:
@@ -150,6 +232,7 @@ export default function PipelineRunView({
   kgId,
   workingGroupId,
   startChild,
+  onComplete,
 }: {
   runId: string;
   kgId: string;
@@ -159,11 +242,20 @@ export default function PipelineRunView({
    *  reasons over the resulting KG (parent_kg_id). Returns the child
    *  run to render nested. */
   startChild?: (parentKgId: string, problem: string) => Promise<PipelineRun>;
+  /** Called once when the run reaches a terminal state (complete/failed).
+   *  e.g. to refresh a KG list that read empty while the run was still in
+   *  flight — ingestion can take minutes for a large doc, so a fixed-delay
+   *  refresh misses the result. */
+  onComplete?: () => void;
 }) {
   const [busy, setBusy] = React.useState(false);
   const [guidance, setGuidance] = React.useState('');
   const [state, setState] = React.useState<RunState>(() => freshState(kgId));
   const closeRef = React.useRef<null | (() => void)>(null);
+  // Held in a ref so firing it doesn't re-open the SSE stream (the effect
+  // below depends only on runId/kgId).
+  const onCompleteRef = React.useRef(onComplete);
+  onCompleteRef.current = onComplete;
 
   // The follow-up child run, when the user reasons over this KG.
   const [followOpen, setFollowOpen] = React.useState(false);
@@ -181,7 +273,10 @@ export default function PipelineRunView({
     const close = openPipelineEvents(runId, {
       onEvent: (ev) => {
         setState((prev) => applyEvent(prev, ev));
-        if (streamTerminal(ev)) closeRef.current?.();
+        if (streamTerminal(ev)) {
+          closeRef.current?.();
+          onCompleteRef.current?.();
+        }
       },
       onError: () =>
         setState((prev) =>
@@ -315,10 +410,30 @@ export default function PipelineRunView({
 
       {/* On completion: the knowledge graph + chat with it (and its
           agents) + an optional new reasoning run over it. */}
+      {/* Render the KG as it builds. KgView reads GET /kgs/{id}/frames +
+          /summary live, so frames appear while the run is still in flight —
+          a long ingest no longer renders empty "0 nodes". (Previously this
+          was gated on phase==='complete', so nothing showed until the run
+          finished, which for a slow ingest looked stuck while the app —
+          reading the KG directly — showed it.) The grounded KgChat below
+          stays gated on completion so you don't chat over a half-built KG. */}
+      {state.phase !== 'failed' && state.kgId && (
+        <div className="mt-3">
+          {/* refreshKey re-reads /summary + /frames when the run advances.
+              Frames land in the substrate over the run's life, so without a
+              re-fetch trigger KgView would keep the empty snapshot it grabbed
+              on mount (kgId never changes) — the "processed but shows empty"
+              bug. Keying on phase + counts forces a re-read at completion (and
+              whenever the SSE count moves), so the finished frames appear. */}
+          <KgView
+            kgId={state.kgId}
+            refreshKey={`${state.phase}:${state.nodes}:${state.edges}`}
+          />
+        </div>
+      )}
+
       {state.phase === 'complete' && (
         <div className="space-y-3">
-          <KgView kgId={state.kgId} />
-
           {/* Chat with the KG — and AS one of the agents that built it.
               The team surfaced above feeds the chat's agent picker. */}
           <KgChat

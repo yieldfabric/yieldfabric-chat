@@ -26,9 +26,16 @@ const WINDOWS: Array<{ label: string; days: number }> = [
  * Cross-surface analytics — everything the signed-in user has run on
  * YieldFabric, across every surface (native chat, the `/v1` tools
  * endpoint, embeddings, …), live from `GET /api/usage/aggregate`
- * (includes failures and today's calls — no rollup lag). The
+ * (includes failures and today's calls — no rollup lag; the token
+ * totals shown are real per-(feature, model) sums). The
  * per-conversation view stays in the chat Usage drawer; this is the
  * "see everything" view.
+ *
+ * Each non-embedding row's `audit` drill-down opens the call's exact
+ * prompt + output — including STREAMING chat replies (the primary chat
+ * path), whose transcript is recorded at stream end. Embeddings stay
+ * logless by design (the `auditable = call_type !== 'embed'` guard
+ * below), so they show an `embedding` marker instead of an audit button.
  */
 export default function Analytics() {
   const navigate = useNavigate();
@@ -290,6 +297,10 @@ function BreakdownCard({
 /** One call in the cross-surface feed, with audit drill-down. */
 function ActivityRow({ event }: { event: UsageEvent }) {
   const [auditOpen, setAuditOpen] = React.useState(false);
+  // Embeddings have no prompt/output to audit — the server never writes a
+  // call-log for them, so offering "audit" only yields a misleading
+  // "No log for this call" message. Show a plain marker instead.
+  const auditable = event.call_type !== 'embed';
   return (
     <li className="rounded-lg border border-line bg-white p-2.5">
       <div className="flex items-center gap-2 text-[11px] text-ink-soft">
@@ -306,7 +317,7 @@ function ActivityRow({ event }: { event: UsageEvent }) {
         <span className="ml-auto tabular-nums">
           {formatTokens(event.total_tokens)} · {(event.latency_ms / 1000).toFixed(1)}s
         </span>
-        {event.id && (
+        {event.id && auditable && (
           <button
             type="button"
             onClick={() => setAuditOpen((v) => !v)}
@@ -316,8 +327,16 @@ function ActivityRow({ event }: { event: UsageEvent }) {
             {auditOpen ? 'hide' : 'audit'}
           </button>
         )}
+        {event.id && !auditable && (
+          <span
+            className="text-[10px] text-ink-mute"
+            title="Embedding calls have no prompt/output transcript to audit"
+          >
+            embedding
+          </span>
+        )}
       </div>
-      {auditOpen && event.id && <CallAudit usageEventId={event.id} />}
+      {auditOpen && auditable && event.id && <CallAudit usageEventId={event.id} />}
     </li>
   );
 }
